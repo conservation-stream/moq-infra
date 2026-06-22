@@ -11,10 +11,18 @@ on:
       - .github/workflows/build-moq-relay-image.yml
   workflow_dispatch:
     inputs:
-      moq_ref:
-        description: Upstream moq git ref, tag, or commit SHA to build.
+      moq_relay_version:
+        description: moq-relay release version to package, without the leading v.
         required: true
-        default: main
+        default: 0.12.12
+      moq_relay_amd64_sha256:
+        description: SHA256 of the x86_64 Linux release binary.
+        required: true
+        default: be41116503ba9bd50dd003466766d0992a08d8ae0b331ff04e1403e024e2950b
+      moq_relay_arm64_sha256:
+        description: SHA256 of the aarch64 Linux release binary.
+        required: true
+        default: b56608e0e6848d2e8578c375936378e46bdf80018508bf19f7a2cf77573ed162
 
 permissions:
   contents: read
@@ -28,7 +36,7 @@ jobs:
   build:
     name: Build image
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -40,17 +48,25 @@ jobs:
       - name: Resolve image names
         id: vars
         env:
-          DISPATCH_MOQ_REF: ${{ github.event.inputs.moq_ref }}
+          DISPATCH_MOQ_RELAY_VERSION: ${{ github.event.inputs.moq_relay_version }}
+          DISPATCH_MOQ_RELAY_AMD64_SHA256: ${{ github.event.inputs.moq_relay_amd64_sha256 }}
+          DISPATCH_MOQ_RELAY_ARM64_SHA256: ${{ github.event.inputs.moq_relay_arm64_sha256 }}
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           REGISTRY: ${{ env.REGISTRY }}
         run: |
           set -euo pipefail
-          moq_ref="${DISPATCH_MOQ_REF:-main}"
-          safe_ref="$(printf '%s' "$moq_ref" | tr -c 'A-Za-z0-9_.-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+          moq_relay_version="${DISPATCH_MOQ_RELAY_VERSION:-0.12.12}"
+          moq_relay_version="${moq_relay_version#moq-relay-v}"
+          moq_relay_version="${moq_relay_version#v}"
+          moq_relay_amd64_sha256="${DISPATCH_MOQ_RELAY_AMD64_SHA256:-be41116503ba9bd50dd003466766d0992a08d8ae0b331ff04e1403e024e2950b}"
+          moq_relay_arm64_sha256="${DISPATCH_MOQ_RELAY_ARM64_SHA256:-b56608e0e6848d2e8578c375936378e46bdf80018508bf19f7a2cf77573ed162}"
+          safe_version="$(printf 'v%s' "$moq_relay_version" | tr -c 'A-Za-z0-9_.-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
           image_name="$(printf '%s/%s' "$REGISTRY" "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')"
-          image_tag="${safe_ref}-${GITHUB_SHA::12}"
+          image_tag="${safe_version}-${GITHUB_SHA::12}"
 
-          echo "moq_ref=$moq_ref" >> "$GITHUB_OUTPUT"
+          echo "moq_relay_version=$moq_relay_version" >> "$GITHUB_OUTPUT"
+          echo "moq_relay_amd64_sha256=$moq_relay_amd64_sha256" >> "$GITHUB_OUTPUT"
+          echo "moq_relay_arm64_sha256=$moq_relay_arm64_sha256" >> "$GITHUB_OUTPUT"
           echo "image_name=$image_name" >> "$GITHUB_OUTPUT"
           echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
           echo "image_ref=$image_name:$image_tag" >> "$GITHUB_OUTPUT"
@@ -73,11 +89,12 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.vars.outputs.image_ref }}
           build-args: |
-            MOQ_REF=${{ steps.vars.outputs.moq_ref }}
-            MOQ_PACKAGE=moq-relay
+            MOQ_RELAY_VERSION=${{ steps.vars.outputs.moq_relay_version }}
+            MOQ_RELAY_AMD64_SHA256=${{ steps.vars.outputs.moq_relay_amd64_sha256 }}
+            MOQ_RELAY_ARM64_SHA256=${{ steps.vars.outputs.moq_relay_arm64_sha256 }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ steps.vars.outputs.moq_ref }}
+            org.opencontainers.image.version=${{ steps.vars.outputs.moq_relay_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -88,7 +105,7 @@ jobs:
           IMAGE_NAME: ${{ steps.vars.outputs.image_name }}
           IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          MOQ_REF: ${{ steps.vars.outputs.moq_ref }}
+          MOQ_RELAY_VERSION: ${{ steps.vars.outputs.moq_relay_version }}
         run: |
           set -euo pipefail
           {
@@ -102,6 +119,6 @@ jobs:
             echo
             echo "\`${IMAGE_NAME}@${IMAGE_DIGEST}\`"
             echo
-            echo "Upstream moq ref: \`${MOQ_REF}\`"
+            echo "moq-relay release: \`moq-relay-v${MOQ_RELAY_VERSION}\`"
             echo "Image tag: \`${IMAGE_TAG}\`"
           } >> "$GITHUB_STEP_SUMMARY"

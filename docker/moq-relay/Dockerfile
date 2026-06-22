@@ -1,53 +1,44 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GIT_IMAGE=alpine/git:latest
-ARG NIX_IMAGE=nixos/nix:latest
+ARG DEBIAN_IMAGE=debian:bookworm-slim
 
-FROM ${GIT_IMAGE} AS source
-ARG MOQ_REPO=https://github.com/moq-dev/moq.git
-ARG MOQ_REF=main
+FROM ${DEBIAN_IMAGE} AS download
 
-WORKDIR /src
-RUN git init . \
-  && git remote add origin "${MOQ_REPO}" \
-  && git fetch --depth 1 origin "${MOQ_REF}" \
-  && git checkout --detach FETCH_HEAD \
-  && git submodule update --init --recursive \
-  && git rev-parse HEAD > /tmp/moq-source-commit
+ARG TARGETARCH
+ARG MOQ_RELAY_VERSION=0.12.12
+ARG MOQ_RELAY_AMD64_SHA256=be41116503ba9bd50dd003466766d0992a08d8ae0b331ff04e1403e024e2950b
+ARG MOQ_RELAY_ARM64_SHA256=b56608e0e6848d2e8578c375936378e46bdf80018508bf19f7a2cf77573ed162
 
-FROM ${NIX_IMAGE} AS builder
-ARG MOQ_PACKAGE=moq-relay
-ENV NIX_CONFIG="experimental-features = nix-command flakes"
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends ca-certificates curl; \
+  rm -rf /var/lib/apt/lists/*; \
+  case "${TARGETARCH}" in \
+    amd64) release_arch="x86_64"; checksum="${MOQ_RELAY_AMD64_SHA256}" ;; \
+    arm64) release_arch="aarch64"; checksum="${MOQ_RELAY_ARM64_SHA256}" ;; \
+    *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+  esac; \
+  url="https://github.com/moq-dev/moq/releases/download/moq-relay-v${MOQ_RELAY_VERSION}/moq-relay-v${MOQ_RELAY_VERSION}-${release_arch}-unknown-linux-gnu"; \
+  curl -fsSL "${url}" -o /usr/local/bin/moq-relay; \
+  echo "${checksum}  /usr/local/bin/moq-relay" | sha256sum -c -; \
+  chmod 0755 /usr/local/bin/moq-relay; \
+  test -x /usr/local/bin/moq-relay
 
-WORKDIR /build
-RUN mkdir -p /output/store
-COPY --from=source /src/ .
-COPY --from=source /tmp/moq-source-commit /output/source-commit
+FROM ${DEBIAN_IMAGE}
 
-RUN --mount=type=cache,target=/root/.cache \
-  nix build ".#${MOQ_PACKAGE}" --out-link result \
-  && cp -r $(nix-store -qR result) /output/store \
-  && cp -r "$(readlink -f result)" /output/result \
-  && rm -rf "/output/store/$(basename "$(readlink -f result)")" \
-  && printf '#!/bin/sh\nexec /bin/%s "$@"\n' "${MOQ_PACKAGE}" > /output/entry.sh \
-  && chmod +x /output/entry.sh
-
-FROM ${NIX_IMAGE}
-ARG MOQ_REPO=https://github.com/moq-dev/moq.git
-ARG MOQ_REF=main
-ARG MOQ_PACKAGE=moq-relay
+ARG MOQ_RELAY_VERSION=0.12.12
 
 LABEL org.opencontainers.image.title="moq-relay"
-LABEL org.opencontainers.image.description="moq-relay built from the upstream moq repository"
-LABEL org.opencontainers.image.source="${MOQ_REPO}"
-LABEL org.opencontainers.image.revision="${MOQ_REF}"
+LABEL org.opencontainers.image.description="moq-relay packaged from a pinned upstream GitHub release binary"
+LABEL org.opencontainers.image.source="https://github.com/moq-dev/moq"
+LABEL org.opencontainers.image.version="${MOQ_RELAY_VERSION}"
+LABEL org.opencontainers.image.url="https://github.com/moq-dev/moq/releases/tag/moq-relay-v${MOQ_RELAY_VERSION}"
 
-COPY --from=builder /output/entry.sh /bin/entry.sh
-COPY --from=builder /output/store /nix/store
-COPY --from=builder /output/result/bin/* /bin/
-COPY --from=builder /output/source-commit /usr/share/moq/source-commit
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends ca-certificates; \
+  rm -rf /var/lib/apt/lists/*
 
-RUN test -x "/bin/${MOQ_PACKAGE}" \
-  && test -s /usr/share/moq/source-commit
+COPY --from=download /usr/local/bin/moq-relay /usr/local/bin/moq-relay
 
-ENTRYPOINT ["/bin/entry.sh"]
+ENTRYPOINT ["/usr/local/bin/moq-relay"]
